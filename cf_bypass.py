@@ -245,7 +245,10 @@ class CloudflareBypasser:
                 except Exception:
                     pass
 
-                checkin_result = page.evaluate('''async (extraHeaders) => {
+                checkin_result = None
+                for _attempt in range(3):
+                    try:
+                        checkin_result = page.evaluate('''async (extraHeaders) => {
                     const post = async (query) => {
                         const resp = await fetch('/api/user/checkin' + query, {
                             method: 'POST',
@@ -306,6 +309,16 @@ class CloudflareBypasser:
                         return { error: e.message, success: false, httpStatus: 0 };
                     }
                 }''', auth_headers)
+                        break
+                    except Exception as _e:
+                        if _attempt >= 2:
+                            raise
+                        print(f'[CF 绕过] 执行上下文失效（页面可能跳转: {page.url}），重载后重试...')
+                        try:
+                            page.goto(self.base_url, wait_until='domcontentloaded', timeout=20000)
+                            self._solve_cf_challenge(page, max_attempts=2, wait_seconds=4)
+                        except Exception:
+                            pass
 
                 print(f'[CF 绕过] 签到结果: {checkin_result.get("message", checkin_result.get("error", "unknown"))}')
 
