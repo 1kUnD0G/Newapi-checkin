@@ -209,6 +209,19 @@ class CloudflareBypasser:
                 cookie_names = [c['name'] for c in context.cookies(self.base_url)]
                 print(f'[CF 诊断] 浏览器当前 cookies: {cookie_names}')
 
+                # 自动从浏览器 localStorage 提取 user_id（new-api 前端缓存 user 对象）
+                # 脚本直连通道被 CF 拦截时无法走 get_user_info 拿 id，这里兜底
+                if not self.user_id:
+                    try:
+                        uid = page.evaluate(
+                            '() => { try { const u = JSON.parse(localStorage.getItem("user"));'
+                            ' return u && u.id ? String(u.id) : null; } catch (e) { return null; } }')
+                        if uid:
+                            self.user_id = uid
+                            print(f'[CF 诊断] 已从 localStorage 提取 user_id: {self.user_id}')
+                    except Exception:
+                        pass
+
                 auth_headers = self._build_auth_headers()
 
                 # 认证预检: 用 /api/user/self 判断认证是否被后端接受
