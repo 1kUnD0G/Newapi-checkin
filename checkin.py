@@ -13,6 +13,32 @@ import requests
 from datetime import datetime
 from typing import Optional
 
+# HTTP 层优先使用 curl_cffi（impersonate Chrome TLS 指纹），
+# 可穿透 Cloudflare 对数据中心 IP 的 TLS 指纹拦截（GitHub Actions runner 常被拦）。
+# 未安装 curl-cffi 时自动回退 requests。
+try:
+    from curl_cffi import requests as cffi_requests
+    CURL_CFFI_AVAILABLE = True
+except ImportError:
+    cffi_requests = None
+    CURL_CFFI_AVAILABLE = False
+
+if CURL_CFFI_AVAILABLE:
+    ReqSession = cffi_requests.Session
+    ReqTimeout = cffi_requests.exceptions.Timeout
+    ReqRequestException = cffi_requests.exceptions.RequestException
+else:
+    ReqSession = requests.Session
+    ReqTimeout = requests.exceptions.Timeout
+    ReqRequestException = requests.exceptions.RequestException
+
+
+def _http_get(url: str, **kwargs) -> requests.Response:
+    """统一 GET 入口：优先 curl_cffi，回退 requests"""
+    if CURL_CFFI_AVAILABLE:
+        return cffi_requests.get(url, **kwargs)
+    return requests.get(url, **kwargs)
+
 try:
     from cf_bypass import detect_cloudflare_block, CloudflareBypasser
     CF_BYPASS_AVAILABLE = True
@@ -79,7 +105,11 @@ class NewAPICheckin:
         self.login_username = login_username
         self.login_password = login_password
         self.access_token = access_token
-        self.session = requests.Session()
+        if CURL_CFFI_AVAILABLE:
+            # 伪装 Chrome 136 TLS 指纹，穿透 CF 的网络层指纹检测
+            self.session = ReqSession(impersonate="chrome136")
+        else:
+            self.session = ReqSession()
         if session_cookie:
             self.session.cookies.set('session', session_cookie)
 
@@ -257,10 +287,10 @@ class NewAPICheckin:
 
             return None
 
-        except requests.exceptions.Timeout:
+        except ReqTimeout:
             print(f'[错误] 请求超时')
             return None
-        except requests.exceptions.RequestException as e:
+        except ReqRequestException as e:
             print(f'[错误] 网络请求失败: {e}')
             return None
         except Exception as e:
@@ -363,9 +393,9 @@ class NewAPICheckin:
             else:
                 result['message'] = f'HTTP {resp.status_code}: {data.get("message", "未知错误")}'
 
-        except requests.exceptions.Timeout:
+        except ReqTimeout:
             result['message'] = '请求超时'
-        except requests.exceptions.RequestException as e:
+        except ReqRequestException as e:
             result['message'] = f'网络请求失败: {e}'
         except Exception as e:
             result['message'] = f'未知错误: {e}'
@@ -646,7 +676,7 @@ def load_config_from_cloud(config_url: str, config_auth: str = None) -> Optional
 
         print(f'[云端] 正在从云端加载配置: {NewAPICheckin._mask_url(config_url)}')
 
-        resp = requests.get(config_url, headers=headers, timeout=30)
+        resp = _http_get(config_url, headers=headers, timeout=30)
 
         if resp.status_code == 401:
             print('[云端] 认证失败: 请检查 CONFIG_AUTH 配置')
@@ -710,10 +740,10 @@ def load_config_from_cloud(config_url: str, config_auth: str = None) -> Optional
     except json.JSONDecodeError:
         print('[云端] 配置文件不是有效的 JSON 格式')
         return None
-    except requests.exceptions.Timeout:
+    except ReqTimeout:
         print('[云端] 请求超时')
         return None
-    except requests.exceptions.RequestException as e:
+    except ReqRequestException as e:
         print(f'[云端] 网络请求失败: {e}')
         return None
     except Exception as e:

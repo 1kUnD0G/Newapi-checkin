@@ -26,6 +26,7 @@ def detect_cloudflare_block(status_code: int, response_text: str) -> Tuple[bool,
     借鉴 background.js:153-156 的检测逻辑:
     - 403 + "Just a moment" / <!DOCTYPE html>
     - 非 JSON 响应包含 <!DOCTYPE 标签
+    - HTTP 200 + <html> 混淆 JS 挑战页（var arg1='<HEX>'，GitHub Actions 数据中心 IP 常见）
     """
     if status_code == 403:
         if 'Just a moment' in response_text or 'just a moment' in response_text.lower():
@@ -41,7 +42,23 @@ def detect_cloudflare_block(status_code: int, response_text: str) -> Tuple[bool,
         import json
         json.loads(response_text)
     except (json.JSONDecodeError, ValueError):
-        if '<!DOCTYPE' in response_text and ('Just a moment' in response_text or 'challenge-platform' in response_text or 'cf-challenge' in response_text):
+        text = response_text or ''
+        low = text.lower()
+        has_html = '<html' in low or '<!doctype' in low
+
+        if has_html:
+            # Cloudflare 挑战页关键词（API 端点正常应返回 JSON，出现 HTML 即异常）
+            cf_marks = ('just a moment', 'checking your browser', 'challenge-platform',
+                        'cf-challenge', '__cf_chl', 'ray id', 'cloudflare')
+            hit = next((m for m in cf_marks if m in low), None)
+            # 混淆 JS 挑战特征：var arg1='<HEX>'+ <script>（如 var arg1='7368DEB...'）
+            obf_js = bool(re.search(r"var arg1\s*=\s*'[0-9a-fA-F]{16,}'", text)) and '<script' in low
+            if hit or obf_js:
+                reason = hit if hit else 'obfuscated JS challenge'
+                return True, f'Cloudflare Challenge (HTTP {status_code} + {reason})'
+            if '<!doctype' in low and 'just a moment' in low:
+                return True, f'Cloudflare JS Challenge (HTTP {status_code} + Just a moment)'
+        elif '<!DOCTYPE' in text and ('Just a moment' in text or 'challenge-platform' in text or 'cf-challenge' in text):
             return True, 'Cloudflare Challenge (non-JSON HTML response)'
 
     return False, ''
