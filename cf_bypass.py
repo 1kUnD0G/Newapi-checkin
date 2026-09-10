@@ -283,65 +283,50 @@ class CloudflareBypasser:
                 for _attempt in range(3):
                     try:
                         checkin_result = page.evaluate('''async (extraHeaders) => {
-                    const post = async (query) => {
-                        const resp = await fetch('/api/user/checkin' + query, {
-                            method: 'POST',
-                            headers: Object.assign({'Content-Type': 'application/json'}, extraHeaders),
-                            credentials: 'include'
-                        });
-                        const text = await resp.text();
-                        try { return {json: JSON.parse(text), status: resp.status}; }
-                        catch (e) { return {notJson: true, status: resp.status, text: text.substring(0, 200)}; }
-                    };
-                    // PoW 工作量证明：获取挑战并计算 nonce（SHA-256 前导零比特）
-                    const solvePoW = async () => {
-                        const r = await fetch('/api/user/pow/challenge?action=checkin', {
-                            credentials: 'include', headers: extraHeaders
-                        });
-                        const j = await r.json();
-                        if (!j.success) throw new Error(j.message || '获取 PoW 挑战失败');
-                        const {challenge_id, prefix, difficulty} = j.data;
-                        let n = 0;
-                        for (;;) {
-                            const nonce = n.toString(16).padStart(8, '0');
-                            const h = new Uint8Array(await crypto.subtle.digest('SHA-256',
-                                new TextEncoder().encode(prefix + nonce)));
-                            const full = Math.floor(difficulty / 8), rem = difficulty % 8;
-                            let ok = true;
-                            for (let i = 0; i < full; i++) if (h[i] !== 0) { ok = false; break; }
-                            if (ok && rem > 0 && (h[full] & (255 << (8 - rem))) !== 0) ok = false;
-                            if (ok) return {challenge_id, nonce};
-                            n++;
-                            if (n > 0xffffffff) throw new Error('超过最大尝试次数');
+                    // 探测签到接口真实路径（该站为魔改网关，标准 /api/user/checkin 返回 404）
+                    const candidates = [
+                        '/api/user/checkin',
+                        '/api/user/check-in',
+                        '/api/user/check_in',
+                        '/api/user/sign',
+                        '/api/user/sign_in',
+                        '/api/user/signin',
+                        '/api/checkin',
+                        '/api/check-in',
+                    ];
+                    const probe = [];
+                    let best = null;
+                    const alreadyKeywords = ['已签到', '已经签到', 'already', '重复签到', '签到完成'];
+                    for (const p of candidates) {
+                        try {
+                            const resp = await fetch(p, {
+                                method: 'POST',
+                                headers: Object.assign({'Content-Type': 'application/json'}, extraHeaders),
+                                credentials: 'include'
+                            });
+                            const text = await resp.text();
+                            let json = null, notJson = false;
+                            try { json = JSON.parse(text); } catch (e) { notJson = true; }
+                            const msg = json ? (json.message || json.msg || (json.error && json.error.message) || 'ok') : text.substring(0, 100);
+                            const msgStr = String(msg);
+                            const success = !!(json && (json.success === true || json.status === 'success' || json.ret === 1 || json.code === 0));
+                            const alreadyCheckedIn = !success && alreadyKeywords.some(k => msgStr.includes(k));
+                            probe.push({p, status: resp.status, success, alreadyCheckedIn, msg: msgStr.substring(0, 60), notJson});
+                            if (notJson) continue;
+                            if (resp.status !== 404 && !json.error) {
+                                best = {p, success: success || alreadyCheckedIn, alreadyCheckedIn,
+                                        message: msgStr, httpStatus: resp.status, data: json};
+                                break;
+                            }
+                            if (!best && resp.status !== 404) {
+                                best = {p, success: success || alreadyCheckedIn, alreadyCheckedIn,
+                                        message: msgStr, httpStatus: resp.status, data: json};
+                            }
+                        } catch (e) {
+                            probe.push({p, status: 0, msg: String(e.message).substring(0, 60)});
                         }
-                    };
-                    try {
-                        let res = await post('');
-                        if (res.json && res.json.message &&
-                            (res.json.message + '').toLowerCase().includes('pow')) {
-                            const pow = await solvePoW();
-                            res = await post('?pow_challenge=' + encodeURIComponent(pow.challenge_id) +
-                                             '&pow_nonce=' + encodeURIComponent(pow.nonce));
-                        }
-                        if (res.notJson) {
-                            return { error: 'Response is not JSON: ' + res.text, httpStatus: res.status, success: false };
-                        }
-                        const data = res.json;
-                        const success = data.success === true || data.status === 'success' || data.ret === 1 || data.code === 0;
-                        const message = data.message || data.msg || data.data || '签到完成';
-                        const msgStr = typeof message === 'string' ? message : JSON.stringify(message);
-                        const alreadyKeywords = ['已签到', '已经签到', 'already', '重复签到'];
-                        const alreadyCheckedIn = !success && alreadyKeywords.some(k => msgStr.includes(k));
-                        return {
-                            success: success || alreadyCheckedIn,
-                            alreadyCheckedIn,
-                            message: msgStr,
-                            httpStatus: res.status,
-                            data: data
-                        };
-                    } catch(e) {
-                        return { error: e.message, success: false, httpStatus: 0 };
                     }
+                    return Object.assign({}, best || {success: false, message: '所有候选路径均失败'}, {probe});
                 }''', auth_headers)
                         break
                     except Exception as _e:
@@ -354,10 +339,8 @@ class CloudflareBypasser:
                         except Exception:
                             pass
 
-                print(f'[CF 绕过] 原始响应: httpStatus={checkin_result.get("httpStatus")}, success={checkin_result.get("success")}, already={checkin_result.get("alreadyCheckedIn")}, notJson={checkin_result.get("notJson")}')
-                if not checkin_result.get('success'):
-                    data = checkin_result.get('data') or {}
-                    print(f'[CF 绕过] 响应体: {str(data)[:300]}')
+                for _p in (checkin_result or {}).get('probe') or []:
+                    print(f'[CF 探测] {_p.get("p")} → HTTP {_p.get("status")} | success={_p.get("success")} | {_p.get("msg") or _p.get("notJson")}')
                 print(f'[CF 绕过] 签到结果: {checkin_result.get("message", checkin_result.get("error", "unknown"))}')
 
                 browser.close()
