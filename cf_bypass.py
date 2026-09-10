@@ -212,15 +212,34 @@ class CloudflareBypasser:
                 # 自动从浏览器 localStorage 提取 user_id（new-api 前端缓存 user 对象）
                 # 脚本直连通道被 CF 拦截时无法走 get_user_info 拿 id，这里兜底
                 if not self.user_id:
+                    uid = None
+                    _extract = ('() => { try { const u = JSON.parse(localStorage.getItem("user"));'
+                                ' return u && u.id ? String(u.id) : null; } catch (e) { return null; } }')
                     try:
-                        uid = page.evaluate(
-                            '() => { try { const u = JSON.parse(localStorage.getItem("user"));'
-                            ' return u && u.id ? String(u.id) : null; } catch (e) { return null; } }')
-                        if uid:
-                            self.user_id = uid
-                            print(f'[CF 诊断] 已从 localStorage 提取 user_id: {self.user_id}')
+                        uid = page.evaluate(_extract)
                     except Exception:
                         pass
+                    if not uid:
+                        # 导航控制台页触发前端拉取用户信息写入 localStorage
+                        try:
+                            print('[CF 诊断] localStorage 无 user，尝试访问控制台页...')
+                            page.goto(f'{self.base_url}/console/home', wait_until='domcontentloaded', timeout=15000)
+                            time.sleep(3)
+                            for _ in range(3):
+                                try:
+                                    uid = page.evaluate(_extract)
+                                except Exception:
+                                    uid = None
+                                if uid:
+                                    break
+                                time.sleep(2)
+                        except Exception:
+                            pass
+                    if uid:
+                        self.user_id = uid
+                        print(f'[CF 诊断] 已获取 user_id: {self.user_id}')
+                    else:
+                        print('[CF 诊断] 未能从浏览器获取 user_id（需在配置中显式提供）')
 
                 auth_headers = self._build_auth_headers()
 
