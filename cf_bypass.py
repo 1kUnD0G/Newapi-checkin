@@ -354,6 +354,7 @@ class CloudflareBypasser:
                         except Exception:
                             pass
 
+                print(f'[CF 绕过] 原始响应: httpStatus={checkin_result.get("httpStatus")}, success={checkin_result.get("success")}, already={checkin_result.get("alreadyCheckedIn")}, notJson={checkin_result.get("notJson")}')
                 print(f'[CF 绕过] 签到结果: {checkin_result.get("message", checkin_result.get("error", "unknown"))}')
 
                 browser.close()
