@@ -72,9 +72,11 @@ class CloudflareBypasser:
     (对应 Chrome 扩展在同一标签页中完成所有操作)
     """
 
-    def __init__(self, base_url: str, session_cookie: str = None, user_id: str = None, access_token: str = None):
+    def __init__(self, base_url: str, session_cookie: str = None, user_id: str = None, access_token: str = None,
+                 session_cookie_name: str = 'session'):
         self.base_url = base_url.rstrip('/')
         self.session_cookie = session_cookie
+        self.session_cookie_name = session_cookie_name or 'session'
         self.user_id = user_id
         self.access_token = access_token
         self._playwright_available = self._check_playwright()
@@ -185,7 +187,7 @@ class CloudflareBypasser:
                 if self.session_cookie:
                     domain = self.base_url.replace('https://', '').replace('http://', '').split('/')[0]
                     context.add_cookies([
-                        {'name': 'session', 'value': self.session_cookie, 'domain': domain, 'path': '/'}
+                        {'name': self.session_cookie_name, 'value': self.session_cookie, 'domain': domain, 'path': '/'}
                     ])
 
                 page = context.new_page()

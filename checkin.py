@@ -97,9 +97,11 @@ class NewAPICheckin:
         return '****'
 
     def __init__(self, base_url: str, session_cookie: str, user_id: str = None, cf_clearance: str = None,
-                 login_username: str = None, login_password: str = None, access_token: str = None):
+                 login_username: str = None, login_password: str = None, access_token: str = None,
+                 session_cookie_name: str = 'session'):
         self.base_url = base_url.rstrip('/')
         self.session_cookie = session_cookie
+        self.session_cookie_name = session_cookie_name or 'session'
         self.original_cf_clearance = cf_clearance
         self.cf_bypassed = False
         self.login_username = login_username
@@ -111,7 +113,7 @@ class NewAPICheckin:
         else:
             self.session = ReqSession()
         if session_cookie:
-            self.session.cookies.set('session', session_cookie)
+            self.session.cookies.set(self.session_cookie_name, session_cookie)
 
         if cf_clearance:
             self.session.cookies.set('cf_clearance', cf_clearance)
@@ -169,24 +171,24 @@ class NewAPICheckin:
                 # 从响应 cookie 中获取新的 session_id
                 new_session = None
                 for cookie in resp.cookies:
-                    if cookie.name == 'session' or cookie.name == 'session_id':
+                    if cookie.name == self.session_cookie_name or cookie.name == 'session_id':
                         new_session = cookie.value
                         break
 
                 if new_session:
                     self.session_cookie = new_session
-                    self.session.cookies.set('session', new_session)
+                    self.session.cookies.set(self.session_cookie_name, new_session)
                     print(f'  [登录] 登录成功，已更新 session')
                     return True
                 else:
                     # 可能 session cookie 在 set-cookie 头中
                     set_cookie = resp.headers.get('Set-Cookie', '')
                     import re
-                    match = re.search(r'(?:session|session_id)=([^;]+)', set_cookie)
+                    match = re.search(rf'(?:{re.escape(self.session_cookie_name)}|session_id)=([^;]+)', set_cookie)
                     if match:
                         new_session = match.group(1)
                         self.session_cookie = new_session
-                        self.session.cookies.set('session', new_session)
+                        self.session.cookies.set(self.session_cookie_name, new_session)
                         print(f'  [登录] 登录成功，已更新 session')
                         return True
 
@@ -514,7 +516,7 @@ class NewAPICheckin:
             result['message'] = 'Cloudflare 拦截: 需安装 Playwright 才能自动绕过 (pip install playwright && playwright install chromium)'
             return result
 
-        bypasser = CloudflareBypasser(self.base_url, self.session_cookie, self.user_id, self.access_token)
+        bypasser = CloudflareBypasser(self.base_url, self.session_cookie, self.user_id, self.access_token, self.session_cookie_name)
 
         if not bypasser.is_available():
             result['message'] = 'Cloudflare 拦截: Playwright 未正确安装'
@@ -623,6 +625,10 @@ def parse_accounts(accounts_str: str) -> list:
                     # 如果提供了系统访问令牌，添加到账号信息中
                     if 'access_token' in item:
                         account['access_token'] = item['access_token']
+                    # 如果站点自定义了登录态 cookie 名（默认 session）
+                    if 'session_cookie_name' in item:
+                        account['session_cookie_name'] = item['session_cookie_name']
+                        account['session_cookie_name'] = item['session_cookie_name'].strip() or 'session'
                     accounts.append(account)
             return accounts
     except json.JSONDecodeError:
@@ -847,13 +853,14 @@ def main():
         login_password = account.get('login_password')
         access_token = account.get('access_token')
         name = account.get('name') or f'账号{i}'
+        session_cookie_name = account.get('session_cookie_name') or 'session'
 
         print(f'[{i}/{len(accounts)}] {name}')
         print(f'  站点: {NewAPICheckin._mask_url(url)}')
         if user_id:
             print(f'  用户ID: {NewAPICheckin._mask_user_id(user_id)}')
 
-        client = NewAPICheckin(url, session_cookie, user_id, cf_clearance, login_username, login_password, access_token)
+        client = NewAPICheckin(url, session_cookie, user_id, cf_clearance, login_username, login_password, access_token, session_cookie_name)
 
         # 获取用户信息（可能触发自动登录）
         user_info = client.get_user_info()
